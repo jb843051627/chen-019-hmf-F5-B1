@@ -62,11 +62,36 @@ abstract class InMemoryMapper<T> implements BaseMapper<T> {
     public int updateById(T entity) {
         for (int i = 0; i < rows.size(); i++) {
             if (idOf(rows.get(i)).equals(idOf(entity))) {
-                rows.set(i, entity);
+                mergeNotNull(rows.get(i), entity);
                 return 1;
             }
         }
         return 0;
+    }
+
+    /**
+     * 模拟 MP updateById 默认 NOT_NULL 策略：只把入参中非空字段盖到库存行，
+     * 没递的栏照库存（分户账编辑"缺栏照库存"依赖这一条）。
+     */
+    private void mergeNotNull(T target, T patch) {
+        Class<?> c = patch.getClass();
+        while (c != null && c != Object.class) {
+            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) {
+                    continue;
+                }
+                f.setAccessible(true);
+                try {
+                    Object v = f.get(patch);
+                    if (v != null) {
+                        f.set(target, v);
+                    }
+                } catch (IllegalAccessException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+            c = c.getSuperclass();
+        }
     }
 
     // ---- 核签业务不调用，桩之 ----
@@ -108,7 +133,8 @@ abstract class InMemoryMapper<T> implements BaseMapper<T> {
 
     @Override
     public T selectOne(Wrapper<T> queryWrapper) {
-        throw new UnsupportedOperationException();
+        List<T> hit = WrapperEval.filter(rows, queryWrapper);
+        return hit.isEmpty() ? null : hit.get(0);
     }
 
     @Override

@@ -58,12 +58,27 @@ final class WrapperEval {
             Object expected = params.get(m.group(1));
             Object actual = Property.get(row, column);
             if ("=".equals(op)) {
-                if (expected == null ? actual != null : !expected.equals(actual)) {
+                if (!sameValue(expected, actual)) {
+                    return false;
+                }
+            } else if ("<>".equals(op) || "!=".equals(op)) {
+                if (sameValue(expected, actual)) {
                     return false;
                 }
             }
         }
         return true;
+    }
+
+    /** 等值判断：null 对 null，数字按数值比（模拟 SQL 中 int/bigint 的 0=0），其余按 equals。 */
+    private static boolean sameValue(Object expected, Object actual) {
+        if (expected == null || actual == null) {
+            return expected == actual;
+        }
+        if (expected instanceof Number && actual instanceof Number) {
+            return ((Number) expected).longValue() == ((Number) actual).longValue();
+        }
+        return expected.equals(actual);
     }
 
     /** 按 wrapper 的 orderBy 段排序。 */
