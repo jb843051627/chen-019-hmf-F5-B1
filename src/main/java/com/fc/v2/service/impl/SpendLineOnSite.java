@@ -23,7 +23,8 @@ final class SpendLineOnSite {
     /**
      * 判断某条线在 now 时刻是否在场。
      *
-     * <p>口径：启用之日够得着（没填按长远在场）、交棒之日还没到（含交棒当天）。
+     * <p>口径：启用之日够得着（没填按长远在场）、交棒之日还没到（不含交棒当天，
+     * 交替当天旧线退出、新线进场）。
      */
     static boolean onSite(THmfSpendLine r, String now) {
         String s = r.getEffStart() == null ? null
@@ -33,7 +34,7 @@ final class SpendLineOnSite {
         if (e != null && e.startsWith(ZERO_DATE_PREFIX)) {
             e = null;
         }
-        return (s == null || s.compareTo(now) <= 0) && (e == null || e.compareTo(now) >= 0);
+        return (s == null || s.compareTo(now) <= 0) && (e == null || e.compareTo(now) > 0);
     }
 
     /** 零日期归一：老库零日期与没填同看 */

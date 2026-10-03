@@ -1,7 +1,6 @@
 package com.fc.v2.service.impl;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
@@ -32,7 +31,7 @@ import com.fc.v2.service.ITHmfSpendLineService;
 @Service
 public class THmfSpendLineServiceImpl implements ITHmfSpendLineService {
 
-    /** 优先级降序；并列按 ruleCode 降序（确定性） */
+    /** 优先级降序；并列按 ruleCode 降序（代号靠后的先说话，两次算给回同一条） */
     private static final Comparator<THmfSpendLine> PRIORITY_THEN_CODE_DESC = new Comparator<THmfSpendLine>() {
         @Override
         public int compare(THmfSpendLine a, THmfSpendLine b) {
@@ -43,9 +42,15 @@ public class THmfSpendLineServiceImpl implements ITHmfSpendLineService {
             }
             String ca = a.getRuleCode() == null ? "" : a.getRuleCode();
             String cb = b.getRuleCode() == null ? "" : b.getRuleCode();
-            return ca.compareTo(cb);
+            return cb.compareTo(ca);
         }
     };
+
+    /** 取值范围下限（含）：负数今年不收 */
+    private static final BigDecimal RANGE_MIN = BigDecimal.ZERO;
+
+    /** 取值范围上限（含）：越过上限的今年不收，高界越出此线的规则整条起不来 */
+    private static final BigDecimal RANGE_MAX = new BigDecimal("100");
 
     @javax.annotation.Resource
     private THmfSpendLineMapper hmfSpendLineMapper;
@@ -71,23 +76,15 @@ public class THmfSpendLineServiceImpl implements ITHmfSpendLineService {
         }
         // 已交棒（status=1）不进现行名单，档里留着只供翻
         List<THmfSpendLine> rows = this.hmfSpendLineMapper.selectList(new QueryWrapper<THmfSpendLine>()
-                .eq("del_flag", 0));
+                .eq("del_flag", 0).eq("status", 0));
         List<THmfSpendLine> out = new ArrayList<THmfSpendLine>();
         if (rows == null) {
             return out;
         }
         String now = ts(at);
         for (THmfSpendLine r : rows) {
-            String s = r.getEffStart() == null ? null : ts(r.getEffStart());
-            String e = r.getEffEnd() == null ? null : ts(r.getEffEnd());
-            if (e != null && e.startsWith("0000-00-00")) {
-                // 老库零日期与没填同看：按长期在场认
-                e = null;
-            }
-            // 在场：启用之日够得着（没填按长远在场）、交棒之日还没到（不含交棒当天）
-            boolean started = s == null || s.compareTo(now) <= 0;
-            boolean notEnded = e == null || e.compareTo(now) >= 0;
-            if (!started || !notEnded) {
+            // 在场判定收在 SpendLineOnSite 一处：名单、角标、逐条、定位同一把尺
+            if (!SpendLineOnSite.onSite(r, now)) {
                 continue;
             }
             out.add(r);
@@ -132,26 +129,29 @@ public class THmfSpendLineServiceImpl implements ITHmfSpendLineService {
             return false;
         }
         THmfSpendLine r = this.hmfSpendLineMapper.selectById(id);
-        if (r == null || r.getStatus() == null) {
+        if (r == null || r.getStatus() == null || r.getStatus() != 0) {
             // 已交棒的那条不进现行计算
             return false;
         }
-        String now = ts(at);
-        String s = r.getEffStart() == null ? null : ts(r.getEffStart());
-        String e = r.getEffEnd() == null ? null : ts(r.getEffEnd());
-        if (e != null && e.startsWith("0000-00-00")) {
-            e = null;
-        }
-        boolean started = s == null || s.compareTo(now) <= 0;
-        boolean notEnded = e == null || e.compareTo(now) > 0;
-        if (!started || !notEnded) {
+        // 与名单同一把尺：在场判定走同一处
+        if (!SpendLineOnSite.onSite(r, ts(at))) {
             return false;
         }
-        // 三条分界数全空起不来；高界越出取值范围的今年也不收
-        if (r.getTh1Max() == null && r.getTh2Max() == null && r.getTh3Max() == null) {
+        // 三条分界数全空起不来；有界越出取值范围的今年也不收
+        BigDecimal highest = null;
+        if (r.getTh1Max() != null && (highest == null || r.getTh1Max().compareTo(highest) > 0)) {
+            highest = r.getTh1Max();
+        }
+        if (r.getTh2Max() != null && (highest == null || r.getTh2Max().compareTo(highest) > 0)) {
+            highest = r.getTh2Max();
+        }
+        if (r.getTh3Max() != null && (highest == null || r.getTh3Max().compareTo(highest) > 0)) {
+            highest = r.getTh3Max();
+        }
+        if (highest == null) {
             return false;
         }
-        return resolveLimit(r, 1) != null || resolveLimit(r, 2) != null || resolveLimit(r, 3) != null;
+        return highest.compareTo(RANGE_MAX) <= 0;
     }
 
     @Override
@@ -161,21 +161,14 @@ public class THmfSpendLineServiceImpl implements ITHmfSpendLineService {
         }
         // 与 listAvailable 同一把尺：角标条数与屏上名单同一回算出来，两处对得齐
         List<THmfSpendLine> rows = this.hmfSpendLineMapper.selectList(new QueryWrapper<THmfSpendLine>()
-                .eq("del_flag", 0));
+                .eq("del_flag", 0).eq("status", 0));
         if (rows == null || rows.isEmpty()) {
             return 0;
         }
         String now = ts(at);
         int n = 0;
         for (THmfSpendLine r : rows) {
-            String s = r.getEffStart() == null ? null : ts(r.getEffStart());
-            String e = r.getEffEnd() == null ? null : ts(r.getEffEnd());
-            if (e != null && e.startsWith("0000-00-00")) {
-                e = null;
-            }
-            boolean started = s == null || s.compareTo(now) <= 0;
-            boolean notEnded = e == null || e.compareTo(now) > 0;
-            if (!started || !notEnded) {
+            if (!SpendLineOnSite.onSite(r, now)) {
                 continue;
             }
             n++;
@@ -185,8 +178,8 @@ public class THmfSpendLineServiceImpl implements ITHmfSpendLineService {
 
     /**
      * 按代号定位 at 时刻生效的那一条版本：只认在场（启用够得着、交棒还没到）的，
-     * 同代号几版并列取启用之日晚的那条；一条都不在场时退而取第一条还没交棒的
-     * （尚未启用的顶不上在场那条，只作兜底），连兜底也没有回 null。
+     * 同代号几版并列取启用之日晚的那条；一条都不在场时回 null——不拿尚未启用
+     * 或已交棒的凑数，够不着就不硬凑结论。
      */
     private THmfSpendLine findRule(String ruleCode, Date at) {
         List<THmfSpendLine> rows = this.hmfSpendLineMapper.selectList(new QueryWrapper<THmfSpendLine>()
@@ -197,14 +190,7 @@ public class THmfSpendLineServiceImpl implements ITHmfSpendLineService {
         String now = ts(at);
         THmfSpendLine best = null;
         for (THmfSpendLine r : rows) {
-            String s = r.getEffStart() == null ? null : ts(r.getEffStart());
-            String e = r.getEffEnd() == null ? null : ts(r.getEffEnd());
-            if (e != null && e.startsWith("0000-00-00")) {
-                e = null;
-            }
-            boolean started = s == null || s.compareTo(now) <= 0;
-            boolean notEnded = e == null || e.compareTo(now) > 0;
-            if (!started || !notEnded) {
+            if (!SpendLineOnSite.onSite(r, now)) {
                 continue;
             }
             if (best == null) {
@@ -212,7 +198,7 @@ public class THmfSpendLineServiceImpl implements ITHmfSpendLineService {
                 continue;
             }
             String bs = best.getEffStart() == null ? "" : ts(best.getEffStart());
-            if ((s == null ? "" : s).compareTo(bs) >= 0) {
+            if ((r.getEffStart() == null ? "" : ts(r.getEffStart())).compareTo(bs) <= 0) {
                 continue;
             }
             best = r;
@@ -220,51 +206,21 @@ public class THmfSpendLineServiceImpl implements ITHmfSpendLineService {
         return best;
     }
 
-    /** 阈值解析：档案为主、明细覆盖；两者皆缺返回 null（调用方按不可用处理），精度统一 2 位 */
-    private BigDecimal resolveLimit(THmfSpendLine r, int tier) {
-        if (r == null) {
-            return null;
-        }
-        BigDecimal v = null;
-        switch (tier) {
-            case 1:
-                v = r.getTh1Max();
-                break;
-            case 2:
-                v = r.getTh2Max();
-                break;
-            case 3:
-                v = r.getTh3Max();
-                break;
-            default:
-                v = null;
-        }
-        if (v == null) {
-            v = defaultThreshold(r, tier);
-        }
-        if (v == null) {
-            return null;
-        }
-        return v.setScale(2, RoundingMode.HALF_UP);
-    }
-
-    /** 档案级默认阈值（明细未维护时的回退来源） */
-    private BigDecimal defaultThreshold(THmfSpendLine r, int tier) {
-        if (tier == 1) {
-            return r.getTh1Max();
-        }
-        return r.getTh1Max();
-    }
-
-    /** 分档：等于上限取高一档 */
+    /**
+     * 分档：贴着上限归该档（等于上限不往高里抬）；取值范围 [0, 100] 之外的数
+     * 今年不收，回 0 不给结论——按代号求值与多规则求值走同一道门。
+     */
     private int levelOf(THmfSpendLine rule, BigDecimal input) {
-        if (rule.getTh1Max() != null && input.compareTo(rule.getTh1Max()) < 0) {
+        if (input.compareTo(RANGE_MIN) < 0 || input.compareTo(RANGE_MAX) > 0) {
+            return 0;
+        }
+        if (rule.getTh1Max() != null && input.compareTo(rule.getTh1Max()) <= 0) {
             return 1;
         }
-        if (rule.getTh2Max() != null && input.compareTo(rule.getTh2Max()) < 0) {
+        if (rule.getTh2Max() != null && input.compareTo(rule.getTh2Max()) <= 0) {
             return 2;
         }
-        if (rule.getTh3Max() != null && input.compareTo(rule.getTh3Max()) < 0) {
+        if (rule.getTh3Max() != null && input.compareTo(rule.getTh3Max()) <= 0) {
             return 3;
         }
         return 4;

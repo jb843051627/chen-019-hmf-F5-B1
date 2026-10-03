@@ -26,7 +26,7 @@ public interface ITHmfSpendLineService {
     /** 多规则求值：at 时刻可用规则中优先级最高者的档位；无可用规则返回 0 */
     int evaluateTop(BigDecimal input, Date at);
 
-    /** at 时刻可用规则（优先级降序、ruleCode 升序） */
+    /** at 时刻可用规则（优先级降序；并列按 ruleCode 降序，代号靠后的先说话） */
     List<THmfSpendLine> listAvailable(Date at);
 
     /** 单条规则在 at 时刻是否可用（批量导入/报表等旁路复用，口径须与定位/列表一致） */
